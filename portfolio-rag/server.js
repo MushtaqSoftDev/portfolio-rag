@@ -7,7 +7,7 @@ import { fileURLToPath } from 'url';
 
 import { GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import { RecursiveCharacterTextSplitter } from "@langchain/textsplitters";
-import { MemoryVectorStore } from "langchain/vectorstores/memory";
+import { MemoryVectorStore } from "@langchain/core/vectorstores";
 import { RetrievalQAChain } from "langchain/chains";
 import { TextLoader } from "langchain/document_loaders/fs/text";
 import { DirectoryLoader } from "langchain/document_loaders/fs/directory";
