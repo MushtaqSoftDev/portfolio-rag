@@ -5,50 +5,43 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
-import { GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI } from "@langchain/google-genai";
-import { RecursiveCharacterTextSplitter } from "@langchain/textsplitters";
-import { MemoryVectorStore } from "@langchain/classic/vectorstores/memory";
+// CORE IMPORTS - Using the most stable paths for Node 22
+import { ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings } from "@langchain/google-genai";
+import { MemoryVectorStore } from "langchain/vectorstores/memory";
 import { RetrievalQAChain } from "langchain/chains";
-import { TextLoader } from "langchain/document_loaders/fs/text";
-import { DirectoryLoader } from "langchain/document_loaders/fs/directory";
+import { RecursiveCharacterTextSplitter } from "@langchain/textsplitters";
 
 dotenv.config();
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-let chain;
+let chain = null;
+let fallbackContext = "";
 
-// Initialize the RAG system
-async function initRAG() {
+// 1. Initialize Knowledge Base
+async function initAI() {
   try {
-    console.log("--- Initializing RAG Knowledge Base ---");
+    console.log("🤖 Loading Knowledge Base...");
     
-    // 1. Load all .md files from the data folder
-    const loader = new DirectoryLoader(
-      path.join(__dirname, 'data'),
-      { ".md": (path) => new TextLoader(path) }
-    );
-    const docs = await loader.load();
-
-    // 2. Split text into chunks
-    const splitter = new RecursiveCharacterTextSplitter({
-      chunkSize: 1000,
-      chunkOverlap: 200,
+    // Load all .md files manually to be safe
+    const dataDir = path.join(__dirname, 'data');
+    const files = fs.readdirSync(dataDir).filter(f => f.endsWith('.md'));
+    let fullText = "";
+    
+    files.forEach(file => {
+      fullText += fs.readFileSync(path.join(dataDir, file), 'utf8') + "\n\n";
     });
-    const splitDocs = await splitter.splitDocuments(docs);
+    
+    fallbackContext = fullText; // Saved for emergency fallback
 
-    // 3. Create Embeddings & Vector Store
-    const embeddings = new GoogleGenerativeAIEmbeddings({
-      apiKey: process.env.GOOGLE_API_KEY,
-    });
-    const vectorStore = await MemoryVectorStore.fromDocuments(splitDocs, embeddings);
+    const splitter = new RecursiveCharacterTextSplitter({ chunkSize: 800, chunkOverlap: 100 });
+    const docs = await splitter.createDocuments([fullText]);
 
-    // 4. Setup LLM and Chain
+    const embeddings = new GoogleGenerativeAIEmbeddings({ apiKey: process.env.GOOGLE_API_KEY });
+    const vectorStore = await MemoryVectorStore.fromDocuments(docs, embeddings);
+
     const model = new ChatGoogleGenerativeAI({
       apiKey: process.env.GOOGLE_API_KEY,
       modelName: "gemini-1.5-flash",
@@ -56,26 +49,36 @@ async function initRAG() {
     });
 
     chain = RetrievalQAChain.fromLLM(model, vectorStore.asRetriever());
-    console.log("--- RAG Ready: Knowledge Base Indexed ---");
-  } catch (error) {
-    console.error("Failed to initialize RAG:", error);
+    console.log("✅ RAG System Ready!");
+  } catch (err) {
+    console.error("⚠️ RAG Init Failed, using Fallback Mode:", err.message);
   }
 }
 
 app.post('/api/chat', async (req, res) => {
-  if (!chain) return res.status(503).json({ error: "System initializing, please wait." });
+  const { question } = req.body;
   
   try {
-    const { question } = req.body;
-    const result = await chain.call({ query: question });
-    res.json({ answer: result.text });
+    // TRY 1: Professional RAG
+    if (chain) {
+      const result = await chain.call({ query: question });
+      return res.json({ answer: result.text });
+    }
+
+    // TRY 2: Fallback Context Injection (If Vector Store fails)
+    const model = new ChatGoogleGenerativeAI({ apiKey: process.env.GOOGLE_API_KEY, modelName: "gemini-1.5-flash" });
+    const response = await model.invoke([
+      ["system", `You are Mushtaq's Assistant. Use this context: ${fallbackContext}`],
+      ["human", question]
+    ]);
+    res.json({ answer: response.content });
+
   } catch (error) {
-    res.status(500).json({ error: "AI failed to respond." });
+    res.status(500).json({ answer: "I'm having trouble connecting. Please email me at mushtaquok70@gmail.com!" });
   }
 });
 
-const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-  initRAG(); // Run indexer on startup
+app.listen(10000, () => {
+  console.log("Server live on port 10000");
+  initAI();
 });
